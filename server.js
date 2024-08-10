@@ -6,7 +6,7 @@ const mysql = require('mysql');
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const multer = require('multer'); // Import multer for handling file uploads
+const multer = require('multer');
 
 // Create Express app
 const app = express();
@@ -54,7 +54,7 @@ const createClient = (clientId) => {
     const client = new Client({
         authStrategy: new LocalAuth({ clientId }),
         puppeteer: {
-            headless:false,
+            headless: false,
             args: ['--no-sandbox', '--disable-setuid-sandbox'],
         },
     });
@@ -99,8 +99,8 @@ app.get('/clientstatus/:clientId', (req, res) => {
     }
 });
 
-// Handle message sending, including image uploads
-app.post('/sendmessage', upload.single('image'), (req, res) => {
+// Handle message sending, including image and document uploads
+app.post('/sendmessage', upload.fields([{ name: 'image', maxCount: 1 }, { name: 'document', maxCount: 1 }]), (req, res) => {
     const { fromNumber, toNumber, text } = req.body;
     const client = clients['client2'];
 
@@ -122,15 +122,28 @@ app.post('/sendmessage', upload.single('image'), (req, res) => {
 
             const formattedTo = `${toNumber}@c.us`;
 
-            // Determine the image URL if an image was uploaded
-            const imageUrl = req.file ? `http://localhost:3001/uploaded-media/${req.file.filename}` : null;
+            // Determine the URLs if image or document was uploaded
+            const imageUrl = req.files['image'] ? `http://localhost:3001/uploaded-media/${req.files['image'][0].filename}` : null;
+            const documentUrl = req.files['document'] ? `http://localhost:3001/uploaded-media/${req.files['document'][0].filename}` : null;
 
             // Create a promise to send the message
             let sendMessagePromise;
-            if (req.file) {
-                const imagePath = path.join(__dirname, 'uploaded-media', req.file.filename);
-                const media = MessageMedia.fromFilePath(imagePath);
-                sendMessagePromise = client.sendMessage(formattedTo, media, { caption: personalizedMessage });
+            if (imageUrl || documentUrl) {
+                const mediaPromises = [];
+
+                if (imageUrl) {
+                    const imagePath = path.join(__dirname, 'uploaded-media', req.files['image'][0].filename);
+                    const imageMedia = MessageMedia.fromFilePath(imagePath);
+                    mediaPromises.push(client.sendMessage(formattedTo, imageMedia, { caption: personalizedMessage }));
+                }
+
+                if (documentUrl) {
+                    const documentPath = path.join(__dirname, 'uploaded-media', req.files['document'][0].filename);
+                    const documentMedia = MessageMedia.fromFilePath(documentPath);
+                    mediaPromises.push(client.sendMessage(formattedTo, documentMedia, { caption: personalizedMessage }));
+                }
+
+                sendMessagePromise = Promise.all(mediaPromises);
             } else {
                 sendMessagePromise = client.sendMessage(formattedTo, personalizedMessage);
             }
@@ -144,7 +157,7 @@ app.post('/sendmessage', upload.single('image'), (req, res) => {
 
                 // Save message details to the database
                 const insertMessageSql = 'INSERT INTO sentdata (`from-user`, `to-user`, `name`, `message`, `url`, `date`, `time`) VALUES (?, ?, ?, ?, ?, ?, ?)';
-                const insertMessageValues = [fromNumber, toNumber, recipientName, personalizedMessage, imageUrl, currentDate, currentTime];
+                const insertMessageValues = [fromNumber, toNumber, recipientName, personalizedMessage, imageUrl || documentUrl, currentDate, currentTime];
 
                 con.query(insertMessageSql, insertMessageValues, (err, result) => {
                     if (err) {
